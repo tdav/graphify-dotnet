@@ -68,6 +68,7 @@ public sealed class PipelineRunner
             int skipped = 0;
             var verboseWarnings = new ConcurrentQueue<string>();
 
+            int totalFiles = detectedFiles.Count;
             await Parallel.ForEachAsync(
                 detectedFiles,
                 new ParallelOptions
@@ -98,8 +99,12 @@ public sealed class PipelineRunner
                             verboseWarnings.Enqueue($"      Warning: Failed to extract {file.RelativePath}: {ex.Message}");
                         }
                     }
+
+                    int done = processed + skipped;
+                    await WriteProgressAsync($"      Extracting... [{done}/{totalFiles}]");
                 });
 
+            await WriteLineAsync();
             var extractionResults = new List<ExtractionResult>(extractionBag);
             foreach (var warning in verboseWarnings)
             {
@@ -118,10 +123,13 @@ public sealed class PipelineRunner
                 await WriteLineAsync("[2b/6] Running AI-enhanced semantic extraction...");
                 var semanticExtractor = new SemanticExtractor(_chatClient);
                 int semanticProcessed = 0;
+                int semanticIndex = 0;
 
                 foreach (var file in detectedFiles)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+                    semanticIndex++;
+                    await WriteProgressAsync($"      AI extracting... [{semanticIndex}/{totalFiles}]");
                     try
                     {
                         var result = await semanticExtractor.ExecuteAsync(file, cancellationToken);
@@ -137,6 +145,7 @@ public sealed class PipelineRunner
                             await WriteLineAsync($"      Warning: Semantic extraction failed for {file.RelativePath}: {ex.Message}");
                     }
                 }
+                await WriteLineAsync();
 
                 await WriteLineAsync($"      AI extracted from {semanticProcessed} files");
                 totalNodes = extractionResults.Sum(r => r.Nodes.Count);
@@ -334,6 +343,11 @@ public sealed class PipelineRunner
     private async Task WriteLineAsync(string message = "")
     {
         await _output.WriteLineAsync(message);
+    }
+
+    private async Task WriteProgressAsync(string message)
+    {
+        await _output.WriteAsync($"\r{message}");
     }
 
     private static Dictionary<int, string> BuildCommunityLabels(KnowledgeGraph graph)
