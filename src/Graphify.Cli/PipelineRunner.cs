@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Graphify.Export;
 using Graphify.Graph;
 using Graphify.Models;
@@ -62,41 +63,49 @@ public sealed class PipelineRunner
             // Stage 2: Extract nodes and edges
             await WriteLineAsync("[2/6] Extracting code structure...");
             var extractor = new Extractor();
-            var extractionResults = new List<ExtractionResult>();
+            var extractionBag = new ConcurrentBag<ExtractionResult>();
             int processed = 0;
             int skipped = 0;
-            int astIndex = 0;
+            var verboseWarnings = new ConcurrentQueue<string>();
 
-            foreach (var file in detectedFiles)
+            await Parallel.ForEachAsync(
+                detectedFiles,
+                new ParallelOptions
+                {
+                    MaxDegreeOfParallelism = Environment.ProcessorCount,
+                    CancellationToken = cancellationToken
+                },
+                async (file, ct) =>
+                {
+                    try
+                    {
+                        var result = await extractor.ExecuteAsync(file, ct);
+                        if (result.Nodes.Count > 0 || result.Edges.Count > 0)
+                        {
+                            extractionBag.Add(result);
+                            Interlocked.Increment(ref processed);
+                        }
+                        else
+                        {
+                            Interlocked.Increment(ref skipped);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Interlocked.Increment(ref skipped);
+                        if (_verbose)
+                        {
+                            verboseWarnings.Enqueue($"      Warning: Failed to extract {file.RelativePath}: {ex.Message}");
+                        }
+                    }
+                });
+
+            var extractionResults = new List<ExtractionResult>(extractionBag);
+            foreach (var warning in verboseWarnings)
             {
-                astIndex++;
-                WriteProgress("Extracting...", astIndex, detectedFiles.Count);
-                cancellationToken.ThrowIfCancellationRequested();
-
-                try
-                {
-                    var result = await extractor.ExecuteAsync(file, cancellationToken);
-                    if (result.Nodes.Count > 0 || result.Edges.Count > 0)
-                    {
-                        extractionResults.Add(result);
-                        processed++;
-                    }
-                    else
-                    {
-                        skipped++;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    if (_verbose)
-                    {
-                        await WriteLineAsync($"      Warning: Failed to extract {file.RelativePath}: {ex.Message}");
-                    }
-                    skipped++;
-                }
+                await WriteLineAsync(warning);
             }
 
-            await WriteLineAsync();
             await WriteLineAsync($"      Processed {processed} files, skipped {skipped}");
             var totalNodes = extractionResults.Sum(r => r.Nodes.Count);
             var totalEdges = extractionResults.Sum(r => r.Edges.Count);
@@ -109,12 +118,9 @@ public sealed class PipelineRunner
                 await WriteLineAsync("[2b/6] Running AI-enhanced semantic extraction...");
                 var semanticExtractor = new SemanticExtractor(_chatClient);
                 int semanticProcessed = 0;
-                int semanticIndex = 0;
 
                 foreach (var file in detectedFiles)
                 {
-                    semanticIndex++;
-                    WriteProgress("AI extracting...", semanticIndex, detectedFiles.Count);
                     cancellationToken.ThrowIfCancellationRequested();
                     try
                     {
@@ -132,7 +138,6 @@ public sealed class PipelineRunner
                     }
                 }
 
-                await WriteLineAsync();
                 await WriteLineAsync($"      AI extracted from {semanticProcessed} files");
                 totalNodes = extractionResults.Sum(r => r.Nodes.Count);
                 totalEdges = extractionResults.Sum(r => r.Edges.Count);
@@ -243,6 +248,13 @@ public sealed class PipelineRunner
                             await WriteLineAsync($"      Exported Neo4j Cypher: {cypherPath}");
                             break;
 
+                        case "ladybug":
+                            var ladybugExporter = new LadybugExporter();
+                            var ladybugPath = Path.Combine(outputDir, "graph.ladybug.cypher");
+                            await ladybugExporter.ExportAsync(graph, ladybugPath, cancellationToken);
+                            await WriteLineAsync($"      Exported Ladybug Cypher: {ladybugPath}");
+                            break;
+
                         case "obsidian":
                             var obsidianExporter = new ObsidianExporter();
                             var obsidianPath = Path.Combine(outputDir, "obsidian");
@@ -322,11 +334,6 @@ public sealed class PipelineRunner
     private async Task WriteLineAsync(string message = "")
     {
         await _output.WriteLineAsync(message);
-    }
-
-    private void WriteProgress(string label, int current, int total)
-    {
-        _output.Write($"\r      {label} [{current}/{total}]");
     }
 
     private static Dictionary<int, string> BuildCommunityLabels(KnowledgeGraph graph)
