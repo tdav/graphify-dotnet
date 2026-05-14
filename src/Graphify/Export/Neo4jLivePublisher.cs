@@ -36,14 +36,24 @@ public sealed class Neo4jLivePublisher
 
         // Wipe label-scoped
         await session.ExecuteWriteAsync(
-            tx => tx.RunAsync($"MATCH (n:{wipeLabel}) DETACH DELETE n").ContinueWith(_ => 0, cancellationToken)).ConfigureAwait(false);
+            async tx =>
+            {
+                var cursor = await tx.RunAsync($"MATCH (n:{wipeLabel}) DETACH DELETE n").ConfigureAwait(false);
+                await cursor.ConsumeAsync().ConfigureAwait(false);
+                return 0;
+            }).ConfigureAwait(false);
 
         // Idempotent uniqueness constraint
         await session.ExecuteWriteAsync(
-            tx => tx.RunAsync(
-                $"CREATE CONSTRAINT graphify_node_id IF NOT EXISTS " +
-                $"FOR (n:{wipeLabel}) REQUIRE n.id IS UNIQUE"
-            ).ContinueWith(_ => 0, cancellationToken)).ConfigureAwait(false);
+            async tx =>
+            {
+                var cursor = await tx.RunAsync(
+                    $"CREATE CONSTRAINT graphify_node_id IF NOT EXISTS " +
+                    $"FOR (n:{wipeLabel}) REQUIRE n.id IS UNIQUE"
+                ).ConfigureAwait(false);
+                await cursor.ConsumeAsync().ConfigureAwait(false);
+                return 0;
+            }).ConfigureAwait(false);
 
         // Nodes — grouped by sanitized type, batched
         var nodesWritten = 0;
@@ -61,8 +71,12 @@ public sealed class Neo4jLivePublisher
             {
                 var payload = batch.Select(BuildNodeRow).ToList();
                 await session.ExecuteWriteAsync(
-                    tx => tx.RunAsync(cypher, new { batch = payload })
-                        .ContinueWith(_ => 0, cancellationToken)).ConfigureAwait(false);
+                    async tx =>
+                    {
+                        var cursor = await tx.RunAsync(cypher, new { batch = payload }).ConfigureAwait(false);
+                        await cursor.ConsumeAsync().ConfigureAwait(false);
+                        return 0;
+                    }).ConfigureAwait(false);
                 nodesWritten += payload.Count;
             }
         }
@@ -92,8 +106,12 @@ public sealed class Neo4jLivePublisher
                 }).ToList();
 
                 await session.ExecuteWriteAsync(
-                    tx => tx.RunAsync(cypher, new { batch = payload })
-                        .ContinueWith(_ => 0, cancellationToken)).ConfigureAwait(false);
+                    async tx =>
+                    {
+                        var cursor = await tx.RunAsync(cypher, new { batch = payload }).ConfigureAwait(false);
+                        await cursor.ConsumeAsync().ConfigureAwait(false);
+                        return 0;
+                    }).ConfigureAwait(false);
                 edgesWritten += payload.Count;
             }
         }
@@ -197,6 +215,10 @@ public sealed class Neo4jLivePublisher
         var result = sb.ToString();
         while (result.Contains("__")) result = result.Replace("__", "_");
         result = result.Trim('_');
+        if (result.Length > 0 && char.IsDigit(result[0]))
+        {
+            result = "_" + result;
+        }
         return string.IsNullOrEmpty(result) ? "RELATED_TO" : result;
     }
 
