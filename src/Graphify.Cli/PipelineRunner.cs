@@ -15,12 +15,18 @@ public sealed class PipelineRunner
     private readonly TextWriter _output;
     private readonly bool _verbose;
     private readonly IChatClient? _chatClient;
+    private readonly Neo4jConnectionOptions? _neo4jOptions;
 
-    public PipelineRunner(TextWriter output, bool verbose = false, IChatClient? chatClient = null)
+    public PipelineRunner(
+        TextWriter output,
+        bool verbose = false,
+        IChatClient? chatClient = null,
+        Neo4jConnectionOptions? neo4jOptions = null)
     {
         _output = output ?? throw new ArgumentNullException(nameof(output));
         _verbose = verbose;
         _chatClient = chatClient;
+        _neo4jOptions = neo4jOptions;
     }
 
     public async Task<KnowledgeGraph?> RunAsync(
@@ -255,6 +261,39 @@ public sealed class PipelineRunner
                             var cypherPath = Path.Combine(outputDir, "graph.cypher");
                             await neo4jExporter.ExportAsync(graph, cypherPath, cancellationToken);
                             await WriteLineAsync($"      Exported Neo4j Cypher: {cypherPath}");
+
+                            if (_neo4jOptions is not null)
+                            {
+                                await WriteLineAsync(
+                                    $"      Publishing to Neo4j: {_neo4jOptions.Uri} (user: {_neo4jOptions.User}) ...");
+                                try
+                                {
+                                    var publisher = new Neo4jLivePublisher();
+                                    var stats = await publisher.PublishAsync(graph, _neo4jOptions, cancellationToken);
+                                    await WriteLineAsync(
+                                        $"      Published: {stats.NodesWritten} nodes, {stats.EdgesWritten} edges " +
+                                        $"({stats.Elapsed.TotalSeconds:F1}s)");
+                                }
+                                catch (Neo4j.Driver.AuthenticationException)
+                                {
+                                    await WriteLineAsync(
+                                        $"      Error: Neo4j auth failed for user {_neo4jOptions.User}");
+                                }
+                                catch (Neo4j.Driver.ServiceUnavailableException ex)
+                                {
+                                    await WriteLineAsync(
+                                        $"      Error: Neo4j unreachable at {_neo4jOptions.Uri}: {ex.Message}");
+                                }
+                                catch (Neo4j.Driver.ClientException ex)
+                                {
+                                    await WriteLineAsync($"      Error: Cypher rejected: {ex.Message}");
+                                }
+                            }
+                            else
+                            {
+                                await WriteLineAsync(
+                                    "      Neo4j connection not configured (set GRAPHIFY__Neo4j__Uri), skipping live publish");
+                            }
                             break;
 
                         case "ladybug":
