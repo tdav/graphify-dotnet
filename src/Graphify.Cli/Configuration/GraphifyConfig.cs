@@ -12,7 +12,7 @@ public class GraphifyConfig
     public AzureOpenAIConfig AzureOpenAI { get; set; } = new();
     public OllamaConfig Ollama { get; set; } = new();
     public CopilotSdkConfig CopilotSdk { get; set; } = new();
-    public Neo4jSettings Neo4j { get; set; } = new();
+    public Neo4jConfig Neo4j { get; set; } = new();
 }
 
 /// <summary>
@@ -48,7 +48,7 @@ public class CopilotSdkConfig
 /// Live Neo4j connection configuration.
 /// Uri/User/Password must be set (env or appsettings.local.json) to enable live publish.
 /// </summary>
-public class Neo4jSettings
+public class Neo4jConfig
 {
     public string? Uri { get; set; }
     public string? User { get; set; }
