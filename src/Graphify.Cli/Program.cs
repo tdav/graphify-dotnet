@@ -1,5 +1,6 @@
 using System.CommandLine;
 using Graphify.Cli.Configuration;
+using Graphify.Export;
 using Graphify.Pipeline;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
@@ -123,6 +124,33 @@ static async Task<(IChatClient? chatClient, bool verbose)> ResolveProviderAsync(
     return (chatClient, verbose);
 }
 
+static Neo4jConnectionOptions? BuildNeo4jOptions()
+{
+    var configuration = ConfigurationFactory.Build();
+    var graphifyConfig = new GraphifyConfig();
+    configuration.GetSection("Graphify").Bind(graphifyConfig);
+
+    var settings = graphifyConfig.Neo4j;
+    if (string.IsNullOrWhiteSpace(settings.Uri))
+    {
+        return null;
+    }
+
+    if (string.IsNullOrWhiteSpace(settings.User) || string.IsNullOrWhiteSpace(settings.Password))
+    {
+        Console.WriteLine(
+            $"⚠ Neo4j Uri is set ({settings.Uri}) but User/Password are missing. Live publish will be skipped.");
+        return null;
+    }
+
+    return new Neo4jConnectionOptions(
+        Uri: settings.Uri,
+        User: settings.User,
+        Password: settings.Password,
+        Database: settings.Database,
+        WipeLabel: settings.WipeLabel);
+}
+
 // ── run command ──────────────────────────────────────────────────────────
 var runPathArg = PathArg("Path to the project to analyze");
 
@@ -174,7 +202,8 @@ runCommand.SetAction(async (parseResult, cancellationToken) =>
         runVerboseOpt, runProviderOpt, runEndpointOpt, runApiKeyOpt, runModelOpt, runDeploymentOpt,
         ignoreProviderOptions: useConfigWizard);
 
-    var runner = new Graphify.Cli.PipelineRunner(Console.Out, verbose, chatClient);
+    var neo4jOptions = BuildNeo4jOptions();
+    var runner = new Graphify.Cli.PipelineRunner(Console.Out, verbose, chatClient, neo4jOptions);
     var graph = await runner.RunAsync(path, output, formats, useCache: true, cancellationToken);
     return graph != null ? 0 : 1;
 });
@@ -203,7 +232,8 @@ watchCommand.SetAction(async (parseResult, cancellationToken) =>
 
     Console.WriteLine("Running initial pipeline...");
     Console.WriteLine();
-    var runner = new Graphify.Cli.PipelineRunner(Console.Out, verbose, chatClient);
+    var neo4jOptions = BuildNeo4jOptions();
+    var runner = new Graphify.Cli.PipelineRunner(Console.Out, verbose, chatClient, neo4jOptions);
     var graph = await runner.RunAsync(path, output, formats, useCache: true, cancellationToken);
 
     if (graph is null)
